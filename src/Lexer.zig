@@ -38,16 +38,18 @@ pub fn deinit(self: Self) void {
 }
 
 pub fn print_context(self: Self, writer: std.fs.File.Writer) !void {
-    var buffer: [1024]u8 = undefined;
     try self.file.seekBy(-@as(i64, @intCast(self.column_no)));
-    const size = try self.file.readAll(&buffer);
+
+    var buffer: [1024]u8 = undefined;
+    const context = try self.file.reader().readUntilDelimiter(&buffer, '\n');
+
     comptime var c = Chameleon.initComptime();
     try c.underline().bold().print(writer, "{s}:{}:{}:\n", .{
         self.filepath,
         self.line_no,
         self.column_no,
     });
-    try writer.print("{s}\n", .{buffer[0..size]});
+    try writer.print("{s}\n", .{context});
     try writer.writeByteNTimes(' ', self.column_no - 1);
     try writer.print("{s}\n", .{c.reset().green().bold().fmt("^")});
 }
