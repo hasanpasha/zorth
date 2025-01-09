@@ -163,24 +163,20 @@ pub fn main() !void {
     const subcommand = args.next() orelse return show_usage(program);
     const filepath = args.next() orelse return show_usage(program);
 
-    var file = try std.fs.cwd().openFile(filepath, .{});
-    defer file.close();
-
-    var buffer: [1024]u8 = undefined;
-    const size = try file.readAll(&buffer);
-    var lexer = try Lexer.init(buffer[0..size]);
+    var lexer = try Lexer.init(filepath);
+    defer lexer.deinit();
 
     if (std.mem.eql(u8, subcommand, "emu")) {
         try emulate(&lexer, allocator);
     } else if (std.mem.eql(u8, subcommand, "com")) {
         var parts = std.mem.split(u8, filepath, ".");
         const first_part = parts.first();
-        const assembly_output = try std.mem.concat(allocator, u8, &.{ first_part, ".asm" });
-        defer allocator.free(assembly_output);
+        const assembly = try std.mem.concat(allocator, u8, &.{ first_part, ".asm" });
+        defer allocator.free(assembly);
         const object = try std.mem.concat(allocator, u8, &.{ first_part, ".o" });
         defer allocator.free(object);
-        _ = try compile(&lexer, .{ .output = assembly_output });
-        _ = try assemble(allocator, assembly_output, .{ .output = object });
+        _ = try compile(&lexer, .{ .output = assembly });
+        _ = try assemble(allocator, assembly, .{ .output = object });
         _ = try link(allocator, object, .{});
     } else {
         try stderr_writer.print("unknown subcommand: \"{s}\"\n", .{subcommand});

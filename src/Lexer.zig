@@ -1,37 +1,67 @@
 const std = @import("std");
 const ascii = std.ascii;
 const Token = @import("token.zig").Token;
+const Chameleon = @import("chameleon");
 
 const Self = @This();
 
-input: []const u8,
-current_char: u8,
-index: usize,
+filepath: []const u8,
+file: std.fs.File,
+current_char: u8 = 0,
+line_no: usize = 1,
+column_no: usize = 0,
 
 const Error = error{
     unexpected_character,
 };
 
-pub fn init(input: []const u8) !Self {
-    return .{
-        .input = input,
-        .current_char = input[0],
-        .index = 0,
+/// The caller is responsible of closing the file
+pub fn init_with_file(filepath: []const u8, file: std.fs.File) Self {
+    var instance = Self{
+        .filepath = filepath,
+        .file = file,
     };
+    instance.advance();
+
+    return instance;
+}
+
+/// The caller should call `deinit` after exhausting the lexer
+pub fn init(filepath: []const u8) !Self {
+    const f = try std.fs.cwd().openFile(filepath, .{});
+
+    return init_with_file(filepath, f);
+}
+
+pub fn deinit(self: Self) void {
+    self.file.close();
+}
+
+pub fn print_context(self: Self, writer: std.fs.File.Writer) !void {
+    var buffer: [1024]u8 = undefined;
+    try self.file.seekBy(-@as(i64, @intCast(self.column_no)));
+    const size = try self.file.readAll(&buffer);
+    comptime var c = Chameleon.initComptime();
+    try c.underline().bold().print(writer, "{s}:{}:{}:\n", .{
+        self.filepath,
+        self.line_no,
+        self.column_no,
+    });
+    try writer.print("{s}\n", .{buffer[0..size]});
+    try writer.writeByteNTimes(' ', self.column_no - 1);
+    try writer.print("{s}\n", .{c.reset().green().bold().fmt("^")});
 }
 
 fn advance(self: *Self) void {
-    self.advance_by(1);
-}
-
-fn advance_by(self: *Self, offset: usize) void {
-    if ((self.index + offset) <= self.input.len and self.current_char != 0) {
-        self.index += offset;
-        if (self.index < self.input.len) {
-            self.current_char = self.input[self.index];
+    if ((self.column_no == 0 and self.current_char == 0) or self.current_char != 0) {
+        if (self.current_char == '\n') {
+            self.line_no += 1;
+            self.column_no = 1;
         } else {
-            self.current_char = 0;
+            self.column_no += 1;
         }
+
+        self.current_char = self.file.reader().readByte() catch 0;
     }
 }
 
@@ -74,6 +104,9 @@ pub fn next(self: *Self) !?Token {
         '-' => self.advance_with(.minus),
         '.' => self.advance_with(.dump),
         0 => null,
-        else => Error.unexpected_character,
+        else => {
+            try self.print_context(std.io.getStdErr().writer());
+            return Error.unexpected_character;
+        },
     };
 }
