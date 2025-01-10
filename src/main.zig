@@ -15,11 +15,55 @@ fn popOrError(stack: *std.ArrayList(i64)) Error!i64 {
     return stack.popOrNull() orelse return Error.empty_stack;
 }
 
+pub fn cross_reference(lexer: *Lexer, alloc: std.mem.Allocator) ![]Token {
+    var tokens = std.ArrayList(Token).init(alloc);
+    defer tokens.deinit();
+
+    var stack = std.ArrayList(usize).init(alloc);
+    defer stack.deinit();
+
+    var idx: usize = 0;
+    while (try lexer.next()) |token| : (idx += 1) {
+        try tokens.append(token);
+        switch (token) {
+            .@"if" => try stack.append(idx),
+            .@"else" => {
+                const block_start = stack.popOrNull() orelse @panic("`else` should close an `if` block");
+                std.debug.assert(tokens.items[block_start] == .@"if");
+
+                tokens.items[block_start] = Token{ .@"if" = idx + 1 };
+                try stack.append(idx);
+            },
+            .end => {
+                const block_start = stack.popOrNull() orelse @panic("`end` should close and `if` or `else` block");
+                const cond_token = tokens.items[block_start];
+                std.debug.assert(cond_token == .@"if" or cond_token == .@"else");
+
+                if (cond_token == .@"if") {
+                    tokens.items[block_start] = Token{ .@"if" = idx };
+                } else if (tokens.items[block_start] == .@"else") {
+                    tokens.items[block_start] = Token{ .@"else" = idx };
+                }
+            },
+            else => {},
+        }
+    }
+
+    return try tokens.toOwnedSlice();
+}
+
 pub fn emulate(lexer: *Lexer, alloc: std.mem.Allocator) !void {
     var stack = std.ArrayList(i64).init(alloc);
     defer stack.deinit();
 
-    while (try lexer.next()) |token| {
+    const tokens = try cross_reference(lexer, alloc);
+    defer alloc.free(tokens);
+
+    var idx: usize = 0;
+    while (idx < tokens.len) {
+        const token = tokens[idx];
+        idx += 1;
+
         switch (token) {
             .push => |value| {
                 try stack.append(value);
@@ -34,10 +78,23 @@ pub fn emulate(lexer: *Lexer, alloc: std.mem.Allocator) !void {
                 const b = try popOrError(&stack);
                 try stack.append(b - a);
             },
+            .equal => {
+                const a = try popOrError(&stack);
+                const b = try popOrError(&stack);
+                try stack.append(@intFromBool(a == b));
+            },
             .dump => {
-                const x = stack.pop();
+                const x = try popOrError(&stack);
                 try stdout_writer.print("{}\n", .{x});
             },
+            .@"if" => |next_block| {
+                const x = try popOrError(&stack);
+                if (x == 0) idx = next_block;
+            },
+            .@"else" => |next_block| {
+                idx = next_block;
+            },
+            .end => {},
         }
     }
 }
@@ -60,7 +117,15 @@ pub fn compile(lexer: *Lexer, args: struct {
         \\_start:
     );
 
-    while (try lexer.next()) |token| {
+    const alloc = std.heap.page_allocator;
+    const tokens = try cross_reference(lexer, alloc);
+    defer alloc.free(tokens);
+
+    var idx: usize = 0;
+    while (idx < tokens.len) {
+        const token = tokens[idx];
+        defer idx += 1;
+
         switch (token) {
             .push => |value| {
                 try writer.print("push {}\n", .{value});
@@ -83,12 +148,42 @@ pub fn compile(lexer: *Lexer, args: struct {
                     \\
                 );
             },
+            .equal => {
+                try writer.writeAll(
+                    \\mov rcx, 0
+                    \\mov rdx, 1
+                    \\pop rax
+                    \\pop rbx
+                    \\cmp rax, rbx
+                    \\cmove rcx, rdx
+                    \\push rcx
+                    \\
+                );
+            },
             .dump => {
                 try writer.writeAll(
                     \\pop rdi
                     \\call dump
                     \\
                 );
+            },
+            .@"if" => |block_end| {
+                try writer.print(
+                    \\pop rax
+                    \\test rax, rax
+                    \\je block_{}
+                    \\
+                , .{block_end});
+            },
+            .@"else" => |block_end| {
+                try writer.print(
+                    \\jmp block_{}
+                    \\block_{}:
+                    \\
+                , .{ block_end, idx + 1 });
+            },
+            .end => {
+                try writer.print("block_{}:\n", .{idx});
             },
         }
     }

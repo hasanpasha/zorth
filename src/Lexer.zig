@@ -13,6 +13,7 @@ column_no: usize = 0,
 
 const Error = error{
     unexpected_character,
+    unknown_keyword,
 };
 
 /// The caller is responsible of closing the file
@@ -41,7 +42,7 @@ pub fn print_context(self: Self, writer: std.fs.File.Writer) !void {
     try self.file.seekBy(-@as(i64, @intCast(self.column_no)));
 
     var buffer: [1024]u8 = undefined;
-    const context = try self.file.reader().readUntilDelimiter(&buffer, '\n');
+    const context = try self.file.reader().readUntilDelimiterOrEof(&buffer, '\n') orelse "";
 
     comptime var c = Chameleon.initComptime();
     try c.underline().bold().print(writer, "{s}:{}:{}:\n", .{
@@ -73,6 +74,16 @@ fn skip_whitespace(self: *Self) void {
     }
 }
 
+fn parse_word(self: *Self, buffer: []u8) ![]u8 {
+    var idx: usize = 0;
+    while (ascii.isAlphanumeric(self.current_char) and idx < buffer.len) : (idx += 1) {
+        buffer[idx] = self.current_char;
+        self.advance();
+    }
+
+    return buffer[0..idx];
+}
+
 fn parse_number(self: *Self) !Token {
     var value: [256]u8 = undefined;
     var idx: usize = 0;
@@ -93,9 +104,23 @@ fn advance_with(self: *Self, op: Token) Token {
 pub fn next(self: *Self) !?Token {
     self.skip_whitespace();
 
-    // if (ascii.isAlphabetic(self.current_char)) {
-    //     return self.parse_id();
-    // }
+    if (ascii.isAlphabetic(self.current_char)) {
+        var buffer: [256]u8 = undefined;
+        const word = try self.parse_word(&buffer);
+
+        const eql = std.mem.eql;
+        if (eql(u8, word, "if")) {
+            return .{ .@"if" = 0 };
+        } else if (eql(u8, word, "else")) {
+            return .{ .@"else" = 0 };
+        } else if (eql(u8, word, "end")) {
+            return .end;
+        } else {
+            return Error.unknown_keyword;
+        }
+
+        self.skip_whitespace();
+    }
 
     if (ascii.isDigit(self.current_char)) {
         return try self.parse_number();
@@ -104,6 +129,7 @@ pub fn next(self: *Self) !?Token {
     return switch (self.current_char) {
         '+' => self.advance_with(.plus),
         '-' => self.advance_with(.minus),
+        '=' => self.advance_with(.equal),
         '.' => self.advance_with(.dump),
         0 => null,
         else => {
